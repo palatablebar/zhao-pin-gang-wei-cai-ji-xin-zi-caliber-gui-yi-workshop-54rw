@@ -44,6 +44,10 @@ def sync_source(source_id: int) -> dict:
         source.sync_status = "running"
         db.commit()
 
+        # 新采集岗位必须沿用当前激活口径，避免把两套计算方式写进同一张表
+        from src.services.rule_service import active_version
+
+        active = active_version(db)
         created = 0
         base = 900
         for offset in (1, 2):
@@ -58,7 +62,7 @@ def sync_source(source_id: int) -> dict:
             title = "高级数据开发工程师" if offset == 1 else "后端开发工程师"
             salary_raw = "22-32K·14薪" if offset == 1 else "16-26K"
             title_result = normalize_title(title, "3-5年")
-            salary_result = parse_salary(salary_raw, "v2")
+            salary_result = parse_salary(salary_raw, active)
             raw = RawPosting(
                 source_id=source_id,
                 external_id=external_id,
@@ -71,7 +75,7 @@ def sync_source(source_id: int) -> dict:
                 raw_json={"title": title, "salary": salary_raw, "synced": True},
                 status=RAW_PARSED,
                 parse_reason="synced",
-                rule_version="v2",
+                rule_version=active,
             )
             db.add(raw)
             db.flush()
@@ -91,7 +95,7 @@ def sync_source(source_id: int) -> dict:
                 annual_months=salary_result.annual_months,
                 is_fulltime=True,
                 confidence=min(title_result.confidence, salary_result.confidence),
-                rule_version="v2",
+                rule_version=active,
                 title_matches=title_result.matched_terms,
                 quality_flags=salary_result.flags,
                 parse_reason=salary_result.reason_code,

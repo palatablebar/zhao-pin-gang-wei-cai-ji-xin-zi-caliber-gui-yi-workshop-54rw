@@ -167,12 +167,78 @@ export interface Benchmark {
   rule_version: string;
   version: number;
   published: boolean;
+  review_status: string;
+  superseded_by_version: string;
+  upgrade_id: number | null;
   generated_at: string | null;
 }
 
 export interface BenchmarkReport extends Benchmark {
   distribution: { low: number; high: number; count: number }[];
   seniority_breakdown: { seniority: string; label: string; sample_count: number; p50: number }[];
+}
+
+export interface AffectedPosting {
+  posting_id: number;
+  raw_id: number;
+  title: string;
+  raw_title: string;
+  salary_raw: string;
+  city: string;
+  salary_min: number | null;
+  salary_max: number | null;
+  salary_median: number | null;
+  rule_version: string;
+  quality_flags: string[];
+  raw_status: string;
+  is_corrected: boolean;
+  changed: boolean;
+  kept_corrected: boolean;
+  after: {
+    title: string;
+    city: string;
+    salary_min: number | null;
+    salary_max: number | null;
+    salary_median: number | null;
+    quality_flags: string[];
+    raw_status: string;
+    rule_version: string;
+  } | null;
+}
+
+export interface UpgradePreview {
+  target_version: string;
+  active_version: string;
+  already_applied: boolean;
+  existing_batch: UpgradeBatch | null;
+  affected_totals: { postings: number; changed: number; kept_corrected: number };
+  affected_postings: AffectedPosting[];
+  reports_to_mark: Benchmark[];
+  published_reports: Benchmark[];
+  reports_to_generate: { city: string; function_type: string; function_label: string }[];
+  target_existing_reports: Benchmark[];
+}
+
+export interface UpgradeBatch {
+  id: number;
+  target_version: string;
+  previous_version: string;
+  status: string;
+  before_rate: TrialResult | null;
+  after_rate: TrialResult | null;
+  affected_snapshot: Record<string, unknown> | null;
+  updated_raws: number;
+  updated_postings: number;
+  skipped_corrected: number;
+  benchmarks_marked: number;
+  reports_created: number;
+  reports_skipped: number;
+  actor_email: string;
+  duration_ms: number;
+  summary: string;
+  started_at: string | null;
+  finished_at: string | null;
+  idempotent: boolean;
 }
 
 export interface QualityItem {

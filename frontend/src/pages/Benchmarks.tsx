@@ -166,10 +166,13 @@ export function BenchmarksPage() {
               >
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline' }}>
                   <span style={{ fontWeight: 560 }}>{item.city} · {FUNCTION_LABELS[item.function_type]}</span>
-                  <StatusPill status={item.published ? 'published' : 'draft'} label={item.published ? '已发布' : '草稿'} />
+                  <span style={{ display: 'flex', gap: 4 }}>
+                    {item.review_status === 'pending_review' ? <StatusPill status="pending_review" label="待复核" /> : null}
+                    <StatusPill status={item.published ? 'published' : 'draft'} label={item.published ? '已发布' : '草稿'} />
+                  </span>
                 </div>
                 <div className="mono" style={{ fontSize: 'var(--fs-micro)', color: 'var(--ink-soft)' }}>
-                  样本 {item.sample_count} · P50 {kYuan(item.p50)} · v{item.version}
+                  样本 {item.sample_count} · P50 {kYuan(item.p50)} · 规则 {item.rule_version} · v{item.version}
                 </div>
               </button>
             ))}
@@ -190,10 +193,18 @@ export function BenchmarksPage() {
                     {report.city} {FUNCTION_LABELS[report.function_type]} 薪资基准
                   </h2>
                   <div style={{ fontSize: 'var(--fs-small)', color: 'var(--ink-soft)' }}>
-                    样本 {report.sample_count} 条（已排除质量标记与面议） · {report.published ? '已发布' : '草稿，待 admin 发布'}
+                    样本 {report.sample_count} 条（规则 {report.rule_version} 下的有效岗位，已排除质量标记与面议） · {report.published ? '已发布' : '草稿，待 admin 发布'}
                   </div>
+                  {report.review_status === 'pending_review' ? (
+                    <div style={{ fontSize: 'var(--fs-small)', color: 'var(--copper)', marginTop: '0.25rem' }}>
+                      口径已切换到 {report.superseded_by_version}：本报告为历史快照，仍可查看，请复核后再对外引用。
+                    </div>
+                  ) : null}
                 </div>
-                <StatusPill status={report.published ? 'published' : 'draft'} label={report.published ? 'PUBLISHED' : 'DRAFT'} />
+                <span style={{ display: 'flex', gap: 4 }}>
+                  {report.review_status === 'pending_review' ? <StatusPill status="pending_review" label="待复核" /> : null}
+                  <StatusPill status={report.published ? 'published' : 'draft'} label={report.published ? 'PUBLISHED' : 'DRAFT'} />
+                </span>
               </div>
 
               <div className="grid" style={{ gridTemplateColumns: 'repeat(3, minmax(0, 1fr))', margin: '0.9rem 0' }}>

@@ -13,6 +13,7 @@ const TONE: Record<string, string> = {
   running: 'tag-copper',
   failed_sync: 'tag-rust',
   published: 'tag-indigo',
+  pending_review: 'tag-copper',
   draft: 'tag',
 };
 

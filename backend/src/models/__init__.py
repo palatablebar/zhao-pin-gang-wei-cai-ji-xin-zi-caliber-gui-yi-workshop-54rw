@@ -4,6 +4,7 @@ from src.models.benchmark import Benchmark
 from src.models.parse_rule import ParseRule
 from src.models.posting import Posting
 from src.models.raw_posting import RawPosting
+from src.models.rule_upgrade import RuleUpgrade
 from src.models.source import Source
 from src.models.user import User
 
@@ -13,6 +14,7 @@ __all__ = [
     "ParseRule",
     "Posting",
     "RawPosting",
+    "RuleUpgrade",
     "Source",
     "User",
 ]

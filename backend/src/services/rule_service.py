@@ -111,7 +111,7 @@ def _status_after(raw: RawPosting, salary_ok: bool, negotiable: bool,
     return RAW_PARSED
 
 
-def _flags_after(posting: Posting, raw: RawPosting, salary, title_confidence: float) -> list[str]:
+def _flags_after(raw: RawPosting, salary, title_confidence: float) -> list[str]:
     flags = list(salary.flags)
     text = raw.salary_raw
     if salary.salary_min is None and ("面议" in text or "可谈" in text):
@@ -129,11 +129,12 @@ def _flags_after(posting: Posting, raw: RawPosting, salary, title_confidence: fl
     return deduped
 
 
-def reparse(db: Session, version: str, actor, ip: str) -> dict:
-    """切规则版本重跑全部原始队列；人工修正过的岗位不再覆盖。"""
-    if version not in ("v1", "v2"):
-        raise AppError(codes.VALIDATION_ERROR, "规则版本仅支持 v1/v2", f"version={version}")
-    started = time.perf_counter()
+def apply_version_to_queue(db: Session, version: str) -> dict:
+    """把目标规则版本应用到全部原始队列：重跑解析 + 激活版本 + 命中数。
+
+    不写审计、不提交事务，由调用方（reparse / 升级批次）决定事务边界；
+    人工修正过的岗位保留修正值（跳过覆盖）。
+    """
     previous = active_version(db)
     raws = db.query(RawPosting).order_by(RawPosting.id).all()
     before = trial_rate([raw.salary_raw for raw in raws], previous)
@@ -150,7 +151,10 @@ def reparse(db: Session, version: str, actor, ip: str) -> dict:
         posting = db.query(Posting).filter(Posting.raw_id == raw.id).first()
         raw.rule_version = version
         if posting is not None and posting.is_corrected:
+            # 人工修正值（薪资/城市/标题）保留；口径版本随批次推进，
+            # 这样新规则版本的基准仍能计入这条有效岗位，而不是静默丢样本。
             skipped_corrected += 1
+            posting.rule_version = version
             raw.status = RAW_CORRECTED
             continue
         raw.status = _status_after(
@@ -177,7 +181,7 @@ def reparse(db: Session, version: str, actor, ip: str) -> dict:
         )
         posting.rule_version = version
         posting.title_matches = title.matched_terms
-        posting.quality_flags = _flags_after(posting, raw, salary, title.confidence)
+        posting.quality_flags = _flags_after(raw, salary, title.confidence)
         posting.parse_reason = salary.reason_code
         updated_postings += 1
 
@@ -186,12 +190,6 @@ def reparse(db: Session, version: str, actor, ip: str) -> dict:
     db.query(ParseRule).filter(ParseRule.version == version).update({ParseRule.is_active_set: True})
     apply_rule_hit_counts(db, previous, before)
     apply_rule_hit_counts(db, version, after)
-    duration_ms = int((time.perf_counter() - started) * 1000)
-    audit_service.record(
-        db, actor, "rule.reparse", "rule_set", version,
-        f"{previous}->{version} before={before['hits']}/{before['attempts']} after={after['hits']}/{after['attempts']} updated={updated_postings}",
-        ip,
-    )
     db.flush()
     return {
         "previous_version": previous,
@@ -201,13 +199,56 @@ def reparse(db: Session, version: str, actor, ip: str) -> dict:
         "updated_raws": len(raws),
         "updated_postings": updated_postings,
         "skipped_corrected": skipped_corrected,
-        "duration_ms": duration_ms,
+        "duration_ms": 0,
     }
 
 
-def activate(db: Session, version: str, actor, ip: str) -> dict:
+def reparse(db: Session, version: str, actor, ip: str) -> dict:
+    """用当前激活版本重跑全部原始队列（单事务）；人工修正过的岗位不再覆盖。
+
+    该入口只做「同版本重跑」，不允许改变激活口径：跨版本切换会混用两套计算方式、
+    并让已发布报告失真，必须走 POST /rules/{version}/upgrade（预览 + 批次追踪 + 幂等）。
+    """
+    _validate_version(version)
+    current = active_version(db)
+    if version != current:
+        raise AppError(
+            codes.CONFLICT,
+            f"当前激活口径为 {current}，不能直接重跑 {version}；请先执行版本升级",
+            f"active={current} requested={version} hint=POST /rules/{version}/upgrade",
+        )
+    started = time.perf_counter()
+    result = apply_version_to_queue(db, version)
+    result["duration_ms"] = int((time.perf_counter() - started) * 1000)
+    audit_service.record(
+        db, actor, "rule.reparse", "rule_set", version,
+        f"{result['previous_version']}->{version} before={result['before']['hits']}/{result['before']['attempts']} "
+        f"after={result['after']['hits']}/{result['after']['attempts']} updated={result['updated_postings']}",
+        ip,
+    )
+    db.flush()
+    return result
+
+
+def _validate_version(version: str) -> None:
     if version not in ("v1", "v2"):
         raise AppError(codes.VALIDATION_ERROR, "规则版本仅支持 v1/v2", f"version={version}")
+
+
+def activate(db: Session, version: str, actor, ip: str) -> dict:
+    """仅同步规则集的激活标记，不重跑岗位、不动基准。
+
+    只允许激活当前已激活版本（等价于无操作）；改变激活口径必须走 orchestration
+    升级流程，否则规则集会与岗位/基准的 rule_version 冲突，混用两套计算方式。
+    """
+    _validate_version(version)
+    current = active_version(db)
+    if version != current:
+        raise AppError(
+            codes.CONFLICT,
+            f"当前激活口径为 {current}，不能用「仅激活」切换到 {version}；请执行版本升级",
+            f"active={current} requested={version} hint=POST /rules/{version}/upgrade",
+        )
     db.query(ParseRule).update({ParseRule.is_active_set: False})
     count = db.query(ParseRule).filter(ParseRule.version == version).update({ParseRule.is_active_set: True})
     audit_service.record(db, actor, "rule.activate", "rule_set", version, f"rules={count}", ip)

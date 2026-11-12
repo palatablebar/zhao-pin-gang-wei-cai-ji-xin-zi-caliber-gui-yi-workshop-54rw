@@ -131,7 +131,11 @@ def correct_raw(db: Session, raw_id: int, payload: dict, actor, ip: str) -> dict
     if payload.get("city_raw"):
         raw.city_raw = payload["city_raw"][:80]
 
-    salary = parse_salary(raw.salary_raw, "v2")
+    from src.services.rule_service import active_version
+
+    # 人工修正沿用当前激活口径做基线解析；修正值本身由人工写入，不再被重跑覆盖
+    active = active_version(db)
+    salary = parse_salary(raw.salary_raw, active)
     salary_min = payload.get("salary_min")
     salary_max = payload.get("salary_max")
     if salary_min is not None and salary_max is not None:
@@ -170,7 +174,8 @@ def correct_raw(db: Session, raw_id: int, payload: dict, actor, ip: str) -> dict
     posting.salary_unit = salary.unit_kind
     posting.annual_months = salary.annual_months
     posting.confidence = max(0.5, min(0.99, title.confidence))
-    posting.rule_version = "manual"
+    # 修正条目的口径版本跟随激活版本：既保留人工修正值，又能计入对应版本的基准
+    posting.rule_version = active
     posting.title_matches = title.matched_terms
     posting.is_corrected = True
     posting.corrected_by = actor.email
@@ -180,7 +185,7 @@ def correct_raw(db: Session, raw_id: int, payload: dict, actor, ip: str) -> dict
     posting.parse_reason = "manual_correction"
     raw.status = RAW_CORRECTED
     raw.parse_reason = "manual_correction"
-    raw.rule_version = "manual"
+    raw.rule_version = active
     audit_service.record(
         db, actor, "raw.correct", "raw_posting", raw.id,
         f"salary={salary_min}-{salary_max} city={posting.city}", ip,

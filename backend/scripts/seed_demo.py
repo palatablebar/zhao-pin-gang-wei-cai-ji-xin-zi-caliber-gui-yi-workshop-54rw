@@ -336,6 +336,8 @@ def _create_corpus(db: Session) -> dict:
         )
         if exists:
             continue
+        from src.services.benchmark_service import _build_detail
+
         db.add(
             Benchmark(
                 city=city,
@@ -347,6 +349,8 @@ def _create_corpus(db: Session) -> dict:
                 rule_version="v1",
                 version=1,
                 published=published,
+                review_status="ok",
+                detail_snapshot=_build_detail(db, city, function_type, "v1", values),
             )
         )
     return {"raws": created_raw, "postings": created_postings}

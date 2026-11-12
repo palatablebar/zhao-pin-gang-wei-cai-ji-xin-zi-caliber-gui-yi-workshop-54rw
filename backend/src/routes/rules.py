@@ -25,10 +25,28 @@ def title_merge(db: Session = Depends(get_db),
     return rule_controller.title_merge(db)
 
 
+@router.get("/upgrades")
+def list_upgrades(db: Session = Depends(get_db),
+                  _: User = Depends(require_permission("read"))) -> list[dict]:
+    return rule_controller.list_upgrades(db)
+
+
 @router.get("/{version}/trial")
 def trial(version: str, db: Session = Depends(get_db),
           _: User = Depends(require_permission("rule:trial"))) -> dict:
     return rule_controller.trial(db, version)
+
+
+@router.get("/{version}/upgrade/preview")
+def upgrade_preview(version: str, db: Session = Depends(get_db),
+                    _: User = Depends(require_permission("read"))) -> dict:
+    return rule_controller.upgrade_preview(db, version)
+
+
+@router.post("/{version}/upgrade")
+def upgrade(version: str, request: Request, db: Session = Depends(get_db),
+            actor: User = Depends(require_permission("rule:activate"))) -> dict:
+    return rule_controller.upgrade(db, version, actor, client_ip(request))
 
 
 @router.post("/{version}/reparse")

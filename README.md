@@ -14,8 +14,9 @@
 - **采集源**：5 个源（拉勾/BOSS直聘/猎聘/企业官网/猎头），展示原始条数与同步状态；「模拟同步」由 Celery worker 异步追加 2 条演示岗位（external_id 幂等）。
 - **原始队列**：按解析状态（已解析/待修正/解析失败/重复折叠/脏原文/人工修正）筛选；raw 原文 ↔ 归一结果对照面板；人工修正薪资/城市并落库。
 - **标准化结果表**：城市/职能/职级/质量标记筛选；细线刻度尺式薪资区间条；CSV 导出。
-- **口径规则**：v1 历史基线（K/万/13~16 薪）与 v2 增补（面议识别、日结/时薪折算、中文千区间）版本化；按钮真实试跑命中率（v1 91.1% → v2 96.1%）；切版本重跑全部原始队列，人工修正条目不覆盖。
-- **薪资基准报表**：按城市 × 职能用 numpy 线性插值计算 P25/P50/P75、样本量与分布；发布（admin）与 CSV 导出。
+- **口径规则**：v1 历史基线（K/万/13~16 薪）与 v2 增补（面议识别、日结/时薪折算、中文千区间）版本化；按钮真实试跑命中率（v1 91.1% → v2 96.1%）；同版本可直接重跑，跨版本切换必须走「预览 → 确认升级」。
+- **口径升级批次（可追踪）**：切换前只读预览受影响岗位与已发布报告；单事务执行，成功才提交、失败整体回滚；同一目标版本只有一个批次，重复执行为幂等回放（不新增批次、不抬高报告版本）；人工修正条目保留不覆盖。
+- **薪资基准报表**：按城市 × 职能 × **规则版本**快照计算 P25/P50/P75、样本量与分布；发布（admin）与 CSV 导出。升级后旧报告仍可查看并标「待复核」（保留生成时的分布快照），新报告只使用新规则下的有效岗位。
 - **质量门禁**：12 条异常分类（面议 4 / 日结时薪 3 / 上下限倒置 2 / 兼职混入 2 / 极端值 1），逐条处置（disposed/ignored）并写审计。
 
 ## 快速启动
@@ -57,6 +58,32 @@ docker compose ps
 | 数据库 | MySQL 8.0（utf8mb4，Alembic 迁移） |
 | 部署 | Docker Compose，5 服务（frontend/backend/worker/db/redis），Nginx 托管 dist |
 
+## 口径版本升级流程
+
+历史基准已对外发布，v1 → v2 不能「直接重算」，否则会混用两套计算方式、重复执行还会让报告版本不断跳增。升级按批次执行：
+
+```bash
+# 1) 预览（只读，不改库）：受影响岗位、已发布报告、将生成的新报告
+curl -H "Authorization: Bearer $TOKEN" $API/api/rules/v2/upgrade/preview
+
+# 2) 执行（admin；单事务，失败整体回滚）
+curl -X POST -H "Authorization: Bearer $TOKEN" $API/api/rules/v2/upgrade
+
+# 3) 批次历史
+curl -H "Authorization: Bearer $TOKEN" $API/api/rules/upgrades
+```
+
+- **可追踪**：`rule_upgrades` 每次升级一行，记录 before/after 命中率、受影响岗位清单、
+  旧报告清单、更新/保留/标记/新建数量、执行人与耗时；审计日志写 `rule.upgrade`。
+- **幂等**：`target_version` 唯一；重复执行同版本直接返回既有批次，只记一条
+  `rule.upgrade.replay` 审计，不新增批次、不重算、不抬高报告版本。
+- **旧报告**：升级前冻结旧快照的分布/职级明细，标记 `review_status=pending_review`
+  与 `superseded_by_version`，仍可查看/导出；重新发布即视为复核完成。
+- **新报告**：按 `city × function × 规则版本` 独立快照，只取该版本下的有效岗位
+  （已解析、无质量标记、有月薪）；人工修正条目重跑时保留，口径版本随批次推进。
+- **原子性**：预览/重跑/建报告/审计全在同一事务内，异常回滚，不留下半成品批次或改了一半的数据。
+- 直接跨版本 `reparse` 或「仅激活版本」会被 409 拦截并提示走升级流程。
+
 ## 核心算法（均为 Python 真算并落库）
 
 ### A. 薪资文本解析与月薪标准化 `backend/src/services/salary_parser.py`
@@ -75,6 +102,17 @@ docker compose ps
 - **相似合并**：字符 3-gram Jaccard ≥ 0.80 归并到已有 canonical，取频次最高写法（`batch_merge_titles`，规则页可跑演示）。
 - **失败态**：无职能词命中时低置信度兜底并进入质量门禁 `needs_review`，不静默当成正确答案。
 
+### C. 口径升级 `backend/src/services/upgrade_service.py`
+
+- **输入**：目标规则版本（v1/v2）+ 当前队列/基准状态。
+- **输出**：`UpgradePreview`（只读影响面）或 `UpgradeBatch`（落库批次）。
+- **预览**：逐条对比「切换前 → 切换后」的薪资数值与质量标记（版本号推进不算变化）；
+  列出全部已发布报告、将被标记待复核的报告、将生成的新报告。
+- **执行（单事务）**：冻结旧报告明细 → 重跑全部原始队列（人工修正保留）→ 激活目标版本
+  → 为目标版本逐 `city × function` 生成快照 → 收尾批次并写审计。
+- **幂等**：`rule_upgrades.target_version` 唯一；命中既有批次直接回放，只补一条 replay 审计。
+- **失败**：异常向上抛，控制器 `rollback`，库内岗位/报告/批次/激活标记均回到升级前状态。
+
 ### 分位计算 `backend/src/services/percentile.py`
 
 numpy `percentile(method="linear")` 计算 P25/P50/P75；基准生成排除质量标记与面议样本（`quality_flags` 为空且 `salary_median` 非空）。
@@ -90,7 +128,7 @@ gb-566/
 │   ├── scripts/seed_demo.py        # 幂等 seed，打印 SEED_SUMMARY
 │   ├── scripts/demo_corpus.py      # 180 条确定性演示语料
 │   ├── scripts/worker_healthcheck.py
-│   ├── migrations/                 # Alembic（0001 由 models metadata 建表）
+│   ├── migrations/                 # Alembic（0001 由 models metadata 建表；0002 升级批次 + 基准版本快照）
 │   └── src/
 │       ├── config/                 # settings / database / celery_app / app
 │       ├── constants/              # enums / roles / error_codes / limits
